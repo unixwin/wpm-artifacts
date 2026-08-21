@@ -1,0 +1,68 @@
+name: mirror-gawk
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'gawk version (ezwinports file tag, e.g. 5.4.1)'
+        required: true
+        default: '5.4.1'
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download upstream (ezwinports @ SourceForge)
+        run: |
+          V="${{ inputs.version }}"
+          URL="https://downloads.sourceforge.net/project/ezwinports/gawk-${V}-w32-bin.zip"
+          curl -fL --retry 3 -o gawk.zip "$URL"
+          test "$(stat -c%s gawk.zip)" -gt 1000000 || { echo 'download too small, likely blocked'; exit 1; }
+
+      - name: Inspect and repackage
+        run: |
+          mkdir extract && cd extract
+          unzip -o ../gawk.zip
+          echo '--- zip layout ---'
+          find . -maxdepth 2 | sort
+          # ezwinports 包内为 gawk.exe + DLL + libexec 等;原样重打包为我们的命名
+          cd ..
+          mv "gawk-${{ inputs.version }}-win-x64.zip" tmp.zip 2>/dev/null || true
+          (cd extract && zip -r "../gawk-${{ inputs.version }}-win-x64.zip" .)
+
+      - name: Manifest
+        run: |
+          Z="gawk-${{ inputs.version }}-win-x64.zip"
+          sha256sum "$Z" | tee sha256.txt
+          stat -c%s "$Z" | tee size.txt
+          # 记录包内 DLL 清单,供索引 files 映射与 review 使用
+          (cd extract && find . -iname '*.dll' | sed 's|^\./||' | sort) > dlls.txt
+          cat dlls.txt
+
+      - name: Verify DLL completeness
+        run: |
+          # x86 二进制在 ubuntu 上无 objdump PE 支持时跳过;CI 可换用 mingw objdump
+          if command -v objdump >/dev/null && file extract/gawk.exe | grep -qi pe32; then
+            bash repackage/check-dll-deps.sh extract || { echo 'DLL check failed'; exit 1; }
+          else
+            echo 'skip native PE inspection on linux runner (see dlls.txt for manual review)'
+          fi
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: gawk-${{ inputs.version }}
+          name: gawk ${{ inputs.version }}
+          body: |
+            Mirror of ezwinports gawk-${{ inputs.version }}-w32-bin.zip (32-bit build, runs on x64 via WOW64).
+            Upstream: https://sourceforge.net/projects/ezwinports/files/gawk-${{ inputs.version }}-w32-bin.zip
+          files: |
+            gawk-${{ inputs.version }}-win-x64.zip
+            sha256.txt
+            size.txt
+            dlls.txt

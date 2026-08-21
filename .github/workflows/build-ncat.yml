@@ -1,0 +1,85 @@
+name: build-ncat
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'nmap release tag (e.g. 7.95, tag name is nmap-7.95)'
+        required: true
+        default: '7.95'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            make
+            autoconf
+            automake
+            libtool
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-pcre2
+
+      - name: Clone nmap source
+        run: |
+          git clone --depth 1 --branch "nmap-${{ inputs.version }}" \
+            https://github.com/nmap/nmap.git src
+
+      - name: Build ncat
+        working-directory: src
+        run: |
+          ./buildconf
+          ./configure \
+            --without-zenmap \
+            --without-nmap-update \
+            --with-openssl
+          make -j"$(nproc)" ncat
+          ls -l ncat/ncat.exe
+
+      - name: Collect portable package
+        run: |
+          mkdir -p dist
+          cp src/ncat/ncat.exe dist/
+          # 携带非系统 DLL(openssl/pcre2 等),用导入表校验完整性
+          bash repackage/collect-dlls.sh dist || true
+          bash repackage/check-dll-deps.sh dist
+          cd dist && zip -r "../ncat-${{ inputs.version }}-win-x64.zip" .
+
+      - name: Manifest
+        shell: bash
+        run: |
+          Z="ncat-${{ inputs.version }}-win-x64.zip"
+          sha256sum "$Z" | tee sha256.txt
+          stat -c%s "$Z" | tee size.txt
+
+      - name: Smoke test
+        shell: cmd
+        run: |
+          dist\ncat.exe --version
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ncat-${{ inputs.version }}
+          name: ncat ${{ inputs.version }}
+          body: |
+            ncat built from nmap-${{ inputs.version }} (MinGW-w64, openssl bundled).
+            Source: https://github.com/nmap/nmap/tree/nmap-${{ inputs.version }}
+          files: |
+            ncat-${{ inputs.version }}-win-x64.zip
+            sha256.txt
+            size.txt
