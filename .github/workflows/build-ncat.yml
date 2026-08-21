@@ -42,7 +42,6 @@ jobs:
       - name: Build ncat
         working-directory: src
         run: |
-          ./buildconf
           ./configure \
             --without-zenmap \
             --without-nmap-update \
