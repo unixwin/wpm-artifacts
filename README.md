@@ -17,6 +17,8 @@ WinuxCmd WPM 自托管构件仓库:为"上游不稳定 / 直链被墙 / 无官�
 |---|---|---|
 | `mirror-gawk.yml` | 镜像上游(ezwinports @ SourceForge) | gawk |
 | `build-ncat.yml` | 从源码编译(MSYS2/MinGW) | ncat |
+| `build-rust.yml` | 在 Windows runner 上用官方固定 toolchain 组装 portable bundle | rust |
+| `build-openssl.yml` | 从固定版本 Windows installer 组装 portable bundle | openssl |
 
 后续候选:`make`(ezwinports 镜像 + 捆绑 libintl/libiconv)、`socat`(MinGW 静态编译)。
 

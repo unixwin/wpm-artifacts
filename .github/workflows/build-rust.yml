@@ -1,0 +1,54 @@
+name: build-rust
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Rust stable version, for example 1.98.1'
+        required: true
+        default: '1.98.1'
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust MSVC toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.version }}-x86_64-pc-windows-msvc
+          components: rustfmt,clippy
+
+      - name: Assemble relocatable payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ inputs.version }}'
+          $toolchain = Join-Path $env:USERPROFILE ".rustup\toolchains\$version-x86_64-pc-windows-msvc"
+          if (-not (Test-Path (Join-Path $toolchain 'bin\rustc.exe'))) { throw 'rustc.exe missing' }
+          New-Item -ItemType Directory -Force -Path dist\rust | Out-Null
+          Copy-Item -Recurse -Force (Join-Path $toolchain '*') dist\rust
+          if (-not (Test-Path dist\rust\bin\cargo.exe)) { throw 'cargo.exe missing' }
+          if (-not (Test-Path dist\rust\bin\rustfmt.exe)) { throw 'rustfmt.exe missing' }
+          if (-not (Test-Path dist\rust\bin\clippy-driver.exe)) { throw 'clippy-driver.exe missing' }
+          Compress-Archive -Path dist\rust\* -DestinationPath "rust-$version-win-x64.zip" -CompressionLevel Optimal
+          (Get-FileHash "rust-$version-win-x64.zip" -Algorithm SHA256).Hash.ToLowerInvariant() | Set-Content sha256.txt
+          (Get-Item "rust-$version-win-x64.zip").Length | Set-Content size.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rust-${{ inputs.version }}
+          name: Rust ${{ inputs.version }}
+          body: |
+            Relocatable Rust MSVC toolchain assembled from the pinned official Rust distribution.
+            Exposes rustc, cargo, rustfmt, and clippy-driver through WPM shims.
+            License: MIT OR Apache-2.0.
+          files: |
+            rust-${{ inputs.version }}-win-x64.zip
+            sha256.txt
+            size.txt

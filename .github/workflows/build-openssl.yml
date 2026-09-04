@@ -1,0 +1,65 @@
+name: build-openssl
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'OpenSSL version, for example 4.0.2'
+        required: true
+        default: '4.0.2'
+      installer_sha256:
+        description: 'SHA256 of the pinned Win64 OpenSSL Light installer'
+        required: true
+        default: 'bbba2ff2edf3f720f03dba256348b33b997ac50dc72bfbe8c038d831d96aa097'
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download pinned Windows installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ inputs.version }}'
+          $url = "https://slproweb.com/download/Win64OpenSSL_Light-$($version.Replace('.', '_')).exe"
+          Invoke-WebRequest -Uri $url -OutFile openssl-installer.exe
+          if ((Get-Item openssl-installer.exe).Length -lt 1000000) { throw 'installer unexpectedly small' }
+          $actual = (Get-FileHash openssl-installer.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne '${{ inputs.installer_sha256 }}') { throw "installer SHA256 mismatch: $actual" }
+
+      - name: Install into staging directory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path staging\openssl | Out-Null
+          $p = Start-Process -FilePath .\openssl-installer.exe -Wait -PassThru -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/DIR=staging\openssl'
+          if ($p.ExitCode -ne 0) { throw "installer failed: $($p.ExitCode)" }
+          if (-not (Test-Path staging\openssl\bin\openssl.exe)) { throw 'openssl.exe missing' }
+
+      - name: Package and checksum
+        shell: pwsh
+        run: |
+          $version = '${{ inputs.version }}'
+          Compress-Archive -Path staging\openssl -DestinationPath "openssl-$version-win-x64.zip" -CompressionLevel Optimal
+          (Get-FileHash "openssl-$version-win-x64.zip" -Algorithm SHA256).Hash.ToLowerInvariant() | Set-Content sha256.txt
+          (Get-Item "openssl-$version-win-x64.zip").Length | Set-Content size.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openssl-${{ inputs.version }}
+          name: OpenSSL ${{ inputs.version }}
+          body: |
+            Portable Windows OpenSSL Light bundle staged from the pinned Shining Light Productions installer.
+            Exposes openssl.exe through a WPM shim and keeps runtime files private under opt/openssl.
+            Provider: https://slproweb.com/products/Win32OpenSSL.html
+            License: Apache-2.0 for OpenSSL; provider redistribution terms apply.
+          files: |
+            openssl-${{ inputs.version }}-win-x64.zip
+            sha256.txt
+            size.txt
