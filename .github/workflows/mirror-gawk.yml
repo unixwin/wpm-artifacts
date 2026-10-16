@@ -48,6 +48,11 @@ jobs:
           # bin/ (and gawk extensions under lib/), which has moved between
           # repackagings of the same upstream file.
           find . \( -iname libncurses6.dll -o -iname libgcc_s_dw2-1.dll \) -delete -print
+          # gawk's optional extension modules (lib/gawk/ext-*/: filefuncs,
+          # inplace, ...) are @load-ed explicitly and the index maps none of
+          # them - the old asset did not carry them either, so shipping them
+          # would only inflate the download.
+          rm -rf lib/gawk/ext-* && echo 'pruned lib/gawk/ext-*'
           cd ..
           (cd extract && zip -r "../${PKG}-win-x64.zip" .)
 
