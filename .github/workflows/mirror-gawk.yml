@@ -44,7 +44,10 @@ jobs:
           # 2026-10-16), so drop the dead ~1.5 MB instead of shipping it:
           #   libncurses6.dll    (no importer)
           #   libgcc_s_dw2-1.dll (no importer; 32-bit GCC runtime)
-          rm -f libncurses6.dll libgcc_s_dw2-1.dll
+          # Match by name: the upstream archive lays the runtime out under
+          # bin/ (and gawk extensions under lib/), which has moved between
+          # repackagings of the same upstream file.
+          find . \( -iname libncurses6.dll -o -iname libgcc_s_dw2-1.dll \) -delete -print
           cd ..
           (cd extract && zip -r "../${PKG}-win-x64.zip" .)
 
