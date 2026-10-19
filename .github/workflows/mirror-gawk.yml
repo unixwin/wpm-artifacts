@@ -38,16 +38,16 @@ jobs:
           unzip -o ../gawk.zip
           echo '--- zip layout ---'
           find . -maxdepth 2 | sort
-          # ezwinports ships the whole 32-bit runtime next to gawk.exe; two of
-          # those DLLs are not in any import table (gawk.exe pulls libgmp-10,
-          # libmpfr-6 and libreadline8 only — measured with dumpbin on
-          # 2026-10-16), so drop the dead ~1.5 MB instead of shipping it:
-          #   libncurses6.dll    (no importer)
-          #   libgcc_s_dw2-1.dll (no importer; 32-bit GCC runtime)
-          # Match by name: the upstream archive lays the runtime out under
-          # bin/ (and gawk extensions under lib/), which has moved between
-          # repackagings of the same upstream file.
-          find . \( -iname libncurses6.dll -o -iname libgcc_s_dw2-1.dll \) -delete -print
+          # Keep the FULL private DLL set. The unixwin1 pruning dropped
+          # libncurses6.dll and libgcc_s_dw2-1.dll as "no importer" — that
+          # measurement read only gawk.exe's DIRECT imports, but imports are
+          # transitive: libmpfr-6.dll needs libgcc_s_dw2-1.dll, and
+          # libreadline8.dll needs libncurses6.dll + libgcc_s_dw2-1.dll. On a
+          # clean machine (no such DLL on %PATH%) gawk.exe died with
+          # STATUS_DLL_NOT_FOUND 0xC0000135 at startup — niubash release run
+          # 39233051251, gawk 5.4.1-unixwin1. The import-closure check below
+          # now runs unconditionally and fails the job before any release;
+          # nothing is pruned here without it passing.
           # gawk's optional extension modules (lib/gawk/ext-*/: filefuncs,
           # inplace, ...) are @load-ed explicitly and the index maps none of
           # them - the old asset did not carry them either, so shipping them
@@ -65,14 +65,59 @@ jobs:
           (cd extract && find . -iname '*.dll' | sed 's|^\./||' | sort) > dlls.txt
           cat dlls.txt
 
-      - name: Verify DLL completeness
+      - name: Verify DLL completeness (transitive, never skipped)
         run: |
-          # x86 二进制在 ubuntu 上无 objdump PE 支持时跳过;CI 可换用 mingw objdump
-          if command -v objdump >/dev/null && file extract/gawk.exe | grep -qi pe32; then
-            bash repackage/check-dll-deps.sh extract || { echo 'DLL check failed'; exit 1; }
-          else
-            echo 'skip native PE inspection on linux runner (see dlls.txt for manual review)'
-          fi
+          # unixwin1 shipped because this step used to SKIP on the linux
+          # runner (the objdump/pe32 guard never held) and the unixwin1
+          # pruning had dropped transitively-imported DLLs — gawk died with
+          # 0xC0000135 on every clean machine (niubash run 39233051251).
+          # Walk the import closure with pefile instead of objdump: it reads
+          # PE (including 32-bit) on any runner, follows DLL imports of DLLs,
+          # and fails the job if any non-system import is missing.
+          pip install --quiet pefile
+          python3 - <<'PY'
+          import os, sys, glob, re
+          import pefile
+
+          SYSTEM_RE = re.compile(
+              r"^(kernel32|user32|advapi32|ws2_32|wsock32|ntdll|shell32|ole32|"
+              r"oleaut32|gdi32|comdlg32|winmm|imm32|version|shlwapi|uuid|"
+              r"iphlpapi|psapi|userenv|crypt32|secur32|dnsapi|wintrust|"
+              r"setupapi|rpcrt4|normaliz|bcrypt|ncrypt|cfgmgr32|powrprof|"
+              r"dbghelp|msvcrt|ucrtbase|ntmarta|windowscodecs|winusb|hid|"
+              r"wbemuuid|fwpuclnt|rasadhlp|mlang|usp10|dwmapi|uxtheme|"
+              r"propsys|apphelp|cryptbase|sspicli|msimg32|winspool\.drv)"
+              r"\.(dll|DRV)$", re.I)
+
+          root = "extract"
+          exes = glob.glob(os.path.join(root, "*.exe"))
+          if not exes:
+              print("no exe files in", root); sys.exit(1)
+          queue = list(exes)
+          seen = set()
+          fail = 0
+          while queue:
+              path = queue.pop()
+              real = os.path.realpath(path)
+              if real in seen:
+                  continue
+              seen.add(real)
+              pe = pefile.PE(path, fast_load=True)
+              pe.parse_data_directories(
+                  directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
+              for entry in getattr(pe, "DIRECTORY_ENTRY_IMPORT", []):
+                  name = entry.dll.decode(errors="replace")
+                  if SYSTEM_RE.match(name):
+                      continue
+                  cand = os.path.join(root, name)
+                  if not os.path.isfile(cand):
+                      print(f"MISSING: {name} (required by {os.path.basename(path)})")
+                      fail = 1
+                      continue
+                  queue.append(cand)
+          sys.exit(fail)
+          PY
+          echo "OK: every non-system import resolves inside the payload"
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -84,10 +129,13 @@ jobs:
             (32-bit build, runs on x64 via WOW64).
             Upstream: https://sourceforge.net/projects/ezwinports/files/gawk-${{ inputs.version }}-w32-bin.zip
 
-            Repackaging revision unixwin${{ inputs.revision }}: the payload keeps only the
-            DLLs the binaries import — libncurses6.dll and libgcc_s_dw2-1.dll have no
-            importer and are dropped (~1.5 MB). niubash's wpm preinstall pins this
-            version, so the index entry's `files` mapping must match this asset.
+            Repackaging revision unixwin${{ inputs.revision }}: only the unused
+            extension-module tree (lib/gawk/ext-*) is pruned; the payload keeps the
+            full private DLL set the import closure requires (gawk.exe, awk.exe,
+            libgmp-10, libmpfr-6, libreadline8, libncurses6, libgcc_s_dw2-1). The
+            release step refuses to publish unless every non-system import resolves
+            inside the payload. niubash's wpm preinstall pins this version, so the
+            index entry's `files` mapping must match this asset.
           files: |
             ${{ env.PKG }}-win-x64.zip
             sha256.txt
