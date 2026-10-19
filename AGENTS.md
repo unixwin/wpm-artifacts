@@ -33,10 +33,16 @@ became invisible until the revision was added).
 - Walk the **import tables**, do not guess: `repackage/check-dll-deps.sh` reads
   every `exe`/`dll` with `objdump -p` and fails if a non-system DLL is missing.
   Use the same information to decide what to drop.
-- The gawk prunes are the model: the unused extension-module tree (7.78 MB →
-  4,366,656 B) and two DLLs nothing imports. Match files **by name**, not by
-  path — the same upstream build lays its tree out differently between
-  releases.
+- The gawk prune is the model: the unused extension-module tree only
+  (7.78 MB → 4,366,656 B). NOT the DLLs: unixwin1 also dropped
+  libncurses6.dll + libgcc_s_dw2-1.dll on a "no importer" reading of
+  gawk.exe's DIRECT import table, but imports are transitive
+  (libmpfr-6 -> libgcc_s_dw2-1; libreadline8 -> libncurses6 +
+  libgcc_s_dw2-1) and gawk died with 0xC0000135 on every clean machine
+  (niubash release run 39233051251). A prune is legal only after the
+  transitive import-closure check passes — mirror-gawk.yml now runs it
+  unconditionally. Match files **by name**, not by path — the same
+  upstream build lays its tree out differently between releases.
 - A pruned file must leave the index `files` mapping in the same commit series
   as the artifact: a mapping for a path the zip no longer contains fails the
   install with "extracted path not found", and a file left unmapped silently
